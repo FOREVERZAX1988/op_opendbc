@@ -71,27 +71,28 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Acceleration: engine torque via ACC_Momentenanforderung, ACC_Verz_anf = 0
   #   Braking: decel via ACC_Verz_anf (negative), ACC_Momentenanforderung = 0
 
-  # Braking deadband: only switch to brake mode for significant decel requests.
-  # Small negative accel (-0.3 to 0) is handled by reducing engine torque (engine braking),
-  # which is much smoother than switching to brake mode (torque=0 + brake pre-fill).
-  # Without this, the mode switch from ~150Nm to 0Nm+brakes causes oscillation.
-  braking = acc_enabled and accel < -0.3
+  # Braking deadband: filter PID noise so we don't rapidly switch between torque and brake mode.
+  # Small negative accel (-0.1 to 0) is handled by reducing engine torque (engine braking).
+  # The ACC_ax_Getriebe >= 0 clamp in torque mode prevents the gearbox conflict that
+  # previously caused brake stabs, so a tight deadband is safe now.
+  braking = acc_enabled and accel < -0.1
 
   # Engine torque request (ACC_Momentenanforderung, 0-1021 Nm)
-  # Fitted from ~214k stock Macan ACC data points across full speed range:
   #
-  # Drag torque (steady cruise): Cabana-verified at 77 km/h (173 Nm) and 119 km/h (217 Nm)
-  # Uses min of two curves: steeper for low speed, flatter for high speed
-  #   20 km/h: 41 Nm   50 km/h: 97 Nm   77 km/h: 173 Nm   119 km/h: 217 Nm
-  # Note: the statistical fit (R²=0.41) was ~30% too low because it averaged coasting states.
-  # The Cabana values represent actual steady-state maintenance torque.
+  # Drag torque (steady cruise): combines two models for best accuracy across all speeds:
+  #   Cabana-verified model: accurate at highway speed (77 km/h: 173 Nm, 119 km/h: 217 Nm)
+  #   Statistical fit (214k pts): better at low speed (standstill: 63 Nm, 20 km/h: 71 Nm)
+  #   Uses max() of both -- Cabana model wins above ~48 km/h, fitted wins below.
+  #   Without the fitted model, standstill torque was only 30 Nm (too low to move the car).
   #
   # Accel gain (additional torque per m/s² of acceleration):
-  # Quadratic fit from stock data -- matches gear ratio physics
-  #   gain = min(1.1 * v² - 6.5 * v + 63, 300)
+  #   Quadratic fit from stock data, floored at 63 to prevent dip at ~10 km/h
+  #   gain = max(min(1.1 * v² - 6.5 * v + 63, 300), 63)
   if acc_enabled and not braking:
-    drag_torque = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
-    accel_gain = min(1.1 * v_ego ** 2 - 6.5 * v_ego + 63, 300)
+    cabana_drag = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
+    fitted_drag = 0.0884 * v_ego ** 2 + 0.96 * v_ego + 63.4
+    drag_torque = max(cabana_drag, fitted_drag)
+    accel_gain = max(min(1.1 * v_ego ** 2 - 6.5 * v_ego + 63, 300), 63)
     accel_torque = accel * accel_gain
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
   else:
@@ -103,17 +104,22 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Disabled:     ACC_Verz_anf=3.01, all others=0
   acc_05_values = {
     "ACC_Status_ACC": acc_control,
-    # Stock ACC_Verz_anf range during braking: -2.015 to 0 (cap to stock range)
-    "ACC_Verz_anf": max(accel, -2.0) if braking else (0 if acc_enabled else 3.01),
+    # Stock ACC_Verz_anf range during braking: -2.015 to 0
+    # Allow slightly beyond stock (-2.5 vs -2.0) for more decisive braking (curves, stops)
+    "ACC_Verz_anf": max(accel, -2.5) if braking else (0 if acc_enabled else 3.01),
     "ACC_Freigabe_Verzanf": 1 if braking else 0,
     "ACC_Freigabe_Momentenanf": 1 if (acc_enabled and not braking) else 0,
     "ACC_Momentenanforderung": acc_moment,
     "ACC_zul_Regelabw": 0,
     # Stock ACC_ax_Getriebe: 0 during cruise, positive during accel, negative only during braking
     # Torque mode: clamp to >= 0 (stock never sends negative ax while engine torque is active)
-    # Braking: allow negative, with speed-dependent lower limit (gentle at low speed)
-    "ACC_ax_Getriebe": (max(min(accel, min(1.8 + 0.015 * v_ego * 3.6, 2.5)), 0) if not braking else
-                         max(accel, max(-2.016, -0.4 - 0.06 * v_ego * 3.6))) if acc_enabled else 0,
+    #   When accelerating (accel > 0.1): floor at 0.3 to prevent premature upshifting
+    #   (PDK shifts to 6th at 40 mph if ax is too low, starving torque)
+    # Braking: allow negative, with speed-dependent lower limit (ramps in with speed)
+    #   At 10 km/h: -1.4, 20 km/h: -2.2, 24+ km/h: -2.5 (slightly beyond stock -2.016)
+    "ACC_ax_Getriebe": (max(min(accel, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
+                             (0.3 if accel > 0.1 else 0)) if not braking else
+                         max(accel, max(-2.5, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Anhalten": stopping,
