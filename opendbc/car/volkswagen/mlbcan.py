@@ -109,11 +109,11 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_Freigabe_Momentenanf": 1 if (acc_enabled and not braking) else 0,
     "ACC_Momentenanforderung": acc_moment,
     "ACC_zul_Regelabw": 0,
-    # Stock ACC_ax_Getriebe: -2.016 to +2.448
-    # Accel: cap to stock max (~1.8 at low speed, up to 2.5 at mid speed)
-    # Braking: at low speed, gearbox gets milder decel than brakes (stock: -0.36 vs -2.0 at 0-5kph)
-    "ACC_ax_Getriebe": max(min(accel, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
-                           max(-2.016, -0.4 - 0.06 * v_ego * 3.6)) if acc_enabled else 0,
+    # Stock ACC_ax_Getriebe: 0 during cruise, positive during accel, negative only during braking
+    # Torque mode: clamp to >= 0 (stock never sends negative ax while engine torque is active)
+    # Braking: allow negative, with speed-dependent lower limit (gentle at low speed)
+    "ACC_ax_Getriebe": (max(min(accel, min(1.8 + 0.015 * v_ego * 3.6, 2.5)), 0) if not braking else
+                         max(accel, max(-2.016, -0.4 - 0.06 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Anhalten": stopping,
