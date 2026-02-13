@@ -115,7 +115,7 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Anhalten": stopping,
-    "ACC_Betaetigung_EPB": esp_hold,
+    "ACC_Betaetigung_EPB": stopping,  # Command hold/release, not echo ESP state
   }
   commands.append(packer.make_can_msg("ACC_05", bus, acc_05_values))
 
