@@ -71,24 +71,26 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Acceleration: engine torque via ACC_Momentenanforderung, ACC_Verz_anf = 0
   #   Braking: decel via ACC_Verz_anf (negative), ACC_Momentenanforderung = 0
 
-  # Use a small deadband to avoid braking mode on tiny negative accel values
-  # from PID controller jitter (e.g. -0.015 m/s² at steady cruise)
-  braking = acc_enabled and accel < -0.1
+  # Braking deadband: only switch to brake mode for significant decel requests.
+  # Small negative accel (-0.3 to 0) is handled by reducing engine torque (engine braking),
+  # which is much smoother than switching to brake mode (torque=0 + brake pre-fill).
+  # Without this, the mode switch from ~150Nm to 0Nm+brakes causes oscillation.
+  braking = acc_enabled and accel < -0.3
 
   # Engine torque request (ACC_Momentenanforderung, 0-1021 Nm)
   # Fitted from ~214k stock Macan ACC data points across full speed range:
   #
-  # Drag torque (steady cruise): quadratic fit of torque vs speed (R²=0.41, 91k points)
-  #   drag_torque = 0.0884 * v^2 + 0.96 * v + 63.4
-  #   20 km/h:  71 Nm   60 km/h: 104 Nm   100 km/h: 158 Nm   140 km/h: 234 Nm
+  # Drag torque (steady cruise): Cabana-verified at 77 km/h (173 Nm) and 119 km/h (217 Nm)
+  # Uses min of two curves: steeper for low speed, flatter for high speed
+  #   20 km/h: 41 Nm   50 km/h: 97 Nm   77 km/h: 173 Nm   119 km/h: 217 Nm
+  # Note: the statistical fit (R²=0.41) was ~30% too low because it averaged coasting states.
+  # The Cabana values represent actual steady-state maintenance torque.
   #
   # Accel gain (additional torque per m/s² of acceleration):
-  # Quadratic fit matches gear ratio physics (low gear = less engine torque per m/s²)
+  # Quadratic fit from stock data -- matches gear ratio physics
   #   gain = min(1.1 * v² - 6.5 * v + 63, 300)
-  #    0 km/h: gain= 63    30 km/h: gain= 71    60 km/h: gain=113
-  #   80 km/h: gain=164   100 km/h: gain=244   120 km/h: gain=300 (capped)
   if acc_enabled and not braking:
-    drag_torque = 0.0884 * v_ego ** 2 + 0.96 * v_ego + 63.4
+    drag_torque = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
     accel_gain = min(1.1 * v_ego ** 2 - 6.5 * v_ego + 63, 300)
     accel_torque = accel * accel_gain
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
@@ -115,7 +117,7 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Anhalten": stopping,
-    "ACC_Betaetigung_EPB": stopping,  # Command hold/release, not echo ESP state
+    "ACC_Betaetigung_EPB": esp_hold,  # Echo ESP hold state -- DO NOT use stopping (causes brake release when ACC off)
   }
   commands.append(packer.make_can_msg("ACC_05", bus, acc_05_values))
 
