@@ -113,12 +113,12 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_zul_Regelabw": 0,
     # Stock ACC_ax_Getriebe: 0 during cruise, positive during accel, negative only during braking
     # Torque mode: clamp to >= 0 (stock never sends negative ax while engine torque is active)
-    #   When accelerating (accel > 0.1): floor at 0.3 to prevent premature upshifting
-    #   (PDK shifts to 6th at 40 mph if ax is too low, starving torque)
+    #   When accelerating (accel > 0.1): floor at 0.5 to prevent premature upshifting
+    #   (matches stock median; PDK shifts to 6th at 40 mph if ax is too low)
     # Braking: allow negative, with speed-dependent lower limit (ramps in with speed)
     #   At 10 km/h: -1.4, 20 km/h: -2.2, 24+ km/h: -2.5 (slightly beyond stock -2.016)
     "ACC_ax_Getriebe": (max(min(accel, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
-                             (0.3 if accel > 0.1 else 0)) if not braking else
+                             (0.5 if accel > 0.1 else 0)) if not braking else
                          max(accel, max(-2.5, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
