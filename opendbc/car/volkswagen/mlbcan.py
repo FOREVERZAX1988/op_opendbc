@@ -78,17 +78,16 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
 
   # Braking mode with hysteresis to prevent rapid mode switching.
   # The torque-to-brake transition (150 Nm -> 0 Nm + brakes) is inherently abrupt.
-  # Hysteresis ensures we only enter braking for significant decel requests and
-  # stay committed until the planner clearly wants to accelerate again.
-  #   Enter braking: accel < -0.3  (significant decel needed)
+  # Hysteresis ensures we only enter braking for meaningful decel requests (curves, stops)
+  # and stay committed until the planner clearly wants to cruise/accelerate again.
+  #   Enter braking: accel < -0.2  (curves, stops -- not too deep or curves won't brake)
   #   Exit braking:  accel > -0.05 (planner clearly wants cruise/accel)
-  # In between (-0.3 to -0.05), mild decel is handled by reducing engine torque
-  # (engine braking), which is smooth and doesn't involve the brake system.
+  # In between (-0.2 to -0.05), mild decel is handled by reducing engine torque.
   if acc_enabled:
     if _braking_prev:
       braking = accel < -0.05   # stay in braking until planner clearly wants cruise/accel
     else:
-      braking = accel < -0.3    # only enter braking for significant decel
+      braking = accel < -0.2    # enter braking for curves/stops
   else:
     braking = False
   _braking_prev = braking
@@ -117,10 +116,10 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     # Planner maxes at ~1.0 m/s² while stock requests 2.5 -- this partially compensates.
     accel_torque = accel * accel_gain * 1.3
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
-    # Smooth taper: fade torque to 0 as accel approaches braking threshold
-    # At accel = -0.15: full torque. At accel = -0.3: torque = 0 (seamless transition)
-    if accel < -0.15:
-      fade = max(0.0, (accel + 0.3) / 0.15)  # 1.0 at -0.15, 0.0 at -0.3
+    # Smooth taper: fade torque to 0 as accel approaches braking threshold (-0.2)
+    # At accel = -0.1: full torque. At accel = -0.2: torque = 0 (seamless transition)
+    if accel < -0.1:
+      fade = max(0.0, (accel + 0.2) / 0.1)  # 1.0 at -0.1, 0.0 at -0.2
       acc_moment = int(acc_moment * fade)
   else:
     acc_moment = 0
