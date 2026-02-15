@@ -9,10 +9,10 @@ ButtonType = structs.CarState.ButtonEvent.Type
 
 # Follow distance levels for MLB (Macan) stalk button
 # 3 levels (0-2) so ACC_Gesetzte_Zeitluecke stays in valid range (3-5).
-# Formula: ZL = leadDistanceBars + 2 = (follow_distance + 1) + 2 = follow_distance + 3
-# FollowDist 0 → ZL=3, 1 → ZL=4, 2 → ZL=5 (max valid)
-# ZL=6+ is "nicht_definiert" and causes car safety faults.
-MLB_FOLLOW_DISTANCE_LEVELS = 3
+# Stock radar's ACC_Gesetzte_Zeitluecke (ZL) is mirrored from ext bus to our ACC_02 on bus 0.
+# The stock radar handles DIST button cycling natively (ZL 1-4).
+# We derive follow_distance from stock ZL: ZL 1→FD 0, ZL 2→FD 1, ZL 3→FD 2, ZL 4→FD 3.
+MLB_DEFAULT_ZEITLUECKE = 4
 
 
 class CarState(CarStateBase):
@@ -28,8 +28,9 @@ class CarState(CarStateBase):
     self.acc_type = 0
     self.stock_lead_distance = 0
     self.stock_lead_object = 0
+    self.stock_zeitluecke = MLB_DEFAULT_ZEITLUECKE
 
-    # Follow distance controlled by stalk button (MLB only)
+    # Follow distance derived from stock radar's ACC_Gesetzte_Zeitluecke (MLB only)
     # Stored in Params so the planner can read it independently
     if CP.flags & VolkswagenFlags.MLB and CP.openpilotLongitudinalControl:
       from openpilot.common.params import Params
@@ -299,19 +300,23 @@ class CarState(CarStateBase):
     self.ldw_stock_values = cam_cp.vl["LDW_02"] if self.CP.networkLocation == NetworkLocation.fwdCamera else {}
     self.gra_stock_values = pt_cp.vl["LS_01"]
 
-    # Pass through stock radar's lead vehicle display data for the instrument cluster
-    # These come from the stock radar ECU on the ext bus (bus 2) even when openpilot controls ACC
+    # Pass through stock radar's data from ext bus (bus 2) for instrument cluster and ZL mirroring.
+    # The stock radar ECU continues sending ACC_02 on bus 2 even when openpilot controls ACC.
     self.stock_lead_distance = int(ext_cp.vl["ACC_02"]["ACC_Abstandsindex"])
     self.stock_lead_object = int(ext_cp.vl["ACC_02"]["ACC_Relevantes_Objekt"])
+    stock_zl = int(ext_cp.vl["ACC_02"]["ACC_Gesetzte_Zeitluecke"])
+    if 1 <= stock_zl <= 5:
+      self.stock_zeitluecke = stock_zl
+
+    # Derive follow distance from stock radar's Zeitluecke (ZL 1-4 → FD 0-3)
+    # This updates automatically when the DIST button cycles the stock radar's ZL
+    if self._params is not None:
+      new_fd = max(0, min(3, self.stock_zeitluecke - 1))
+      if new_fd != self.follow_distance:
+        self.follow_distance = new_fd
+        self._params.put_nonblocking('FollowDistance', str(self.follow_distance))
 
     ret.buttonEvents = self.create_button_events(pt_cp, self.CCP.BUTTONS)
-
-    # Cycle follow distance on stalk distance button release (MLB with openpilot long only)
-    if self._params is not None:
-      for b in ret.buttonEvents:
-        if b.type == ButtonType.gapAdjustCruise and not b.pressed:
-          self.follow_distance = (self.follow_distance + 1) % MLB_FOLLOW_DISTANCE_LEVELS
-          self._params.put_nonblocking('FollowDistance', str(self.follow_distance))
 
     ret.cruiseState.standstill = self.CP.pcmCruise and self.esp_hold_confirmation
     ret.standstill = ret.vEgoRaw == 0
