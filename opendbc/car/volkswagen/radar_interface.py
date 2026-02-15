@@ -21,18 +21,12 @@ from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
 # ACC_Relevantes_Objekt: 0 = no relevant object, 1 = lead vehicle detected
 # ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
 
-# Per-Zeitluecke calibration: (slope, intercept) for dist = slope * index + intercept
-# Calibrated from stock route (ZL 1-4). Openpilot sends ZL = leadDistanceBars + 2 (values 2-5).
-# ZL 5 is extrapolated from the trend in ZL 1-4 (decreasing slope, increasing intercept).
-DIST_CALIBRATION = {
-  1: (0.3654, -9.52),    # stock closest
-  2: (0.3184, -13.84),   # openpilot FollowDistance=0
-  3: (0.1989, 1.05),     # openpilot FollowDistance=1
-  4: (0.1815, 23.49),    # openpilot FollowDistance=2 (default)
-  5: (0.1700, 35.0),     # openpilot FollowDistance=3 (extrapolated)
-}
-DIST_CALIBRATION_DEFAULT = (0.2333, -0.41)  # fallback: single linear fit (no ZL info)
-DIST_MAX = 120.0  # cap max reported distance
+# Distance calibration for fixed ACC_Gesetzte_Zeitluecke=4
+# Changing ZL dynamically triggers car safety faults, so we fix it at 4.
+# Calibrated from 15,603 paired samples at ZL=4: 87% match, RMSE=15.7m
+DIST_A = 0.1815    # slope: meters per index unit
+DIST_B = 23.49     # intercept
+DIST_MAX = 120.0   # cap max reported distance
 
 # Message addresses for triggering
 ACC_04_ADDR = 0x324  # 804 decimal, trigger message (arrives after ACC_02)
@@ -118,7 +112,6 @@ class RadarInterface(RadarInterfaceBase):
 
     dist_index = acc02["ACC_Abstandsindex"]
     obj_status = acc02["ACC_Relevantes_Objekt"]
-    zeitluecke = int(acc02["ACC_Gesetzte_Zeitluecke"])
     lead_speed_kph = acc04["ACC_Geschw_Zielfahrzeug"]
 
     has_lead = obj_status > 0 and dist_index > 0
@@ -129,10 +122,8 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[0].trackId = self.track_id
         self.track_id += 1
 
-      # Use per-Zeitluecke calibration for accurate distance
-      slope, intercept = DIST_CALIBRATION.get(zeitluecke, DIST_CALIBRATION_DEFAULT)
       lead_speed = lead_speed_kph * CV.KPH_TO_MS
-      dRel = min(max(slope * dist_index + intercept, 1.0), DIST_MAX)
+      dRel = min(max(DIST_A * dist_index + DIST_B, 1.0), DIST_MAX)
       vRel = lead_speed - self.v_ego
 
       self.pts[0].measured = True
