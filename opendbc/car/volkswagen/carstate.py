@@ -35,7 +35,8 @@ class CarState(CarStateBase):
     if CP.flags & VolkswagenFlags.MLB and CP.openpilotLongitudinalControl:
       from openpilot.common.params import Params
       self._params = Params()
-      self.follow_distance = int(self._params.get("FollowDistance", return_default=True))
+      fd_val = self._params.get("FollowDistance", return_default=True)
+      self.follow_distance = int(fd_val) if fd_val is not None else 2
     else:
       self._params = None
       self.follow_distance = 2  # default
