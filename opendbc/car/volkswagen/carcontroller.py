@@ -141,15 +141,17 @@ class CarController(CarControllerBase):
                                                        CS.out.steeringPressed, hud_alert, hud_control))
 
     if self.frame % self.CCP.ACC_HUD_STEP == 0 and self.CP.openpilotLongitudinalControl:
-      lead_distance = 0
-      if hud_control.leadVisible and self.frame * DT_CTRL > 1.0:  # Don't display lead until we know the scaling factor
-        lead_distance = 512 if CS.upscale_lead_car_signal else 8
+      # Forward stock radar's lead vehicle data to the instrument cluster display.
+      # This preserves the dashboard's lead car icon and distance visualization
+      # that the stock radar provides, even though openpilot replaces ACC_02.
+      lead_distance = CS.stock_lead_distance
+      lead_object = CS.stock_lead_object
       acc_hud_status = self.CCS.acc_hud_status_value(CS.out.cruiseState.available, CS.out.accFaulted, CC.longActive)
       # FIXME: PQ may need to use the on-the-wire mph/kmh toggle to fix rounding errors
       # FIXME: Detect clusters with vEgoCluster offsets and apply an identical vCruiseCluster offset
       set_speed = hud_control.setSpeed * CV.MS_TO_KPH
       can_sends.append(self.CCS.create_acc_hud_control(self.packer_pt, self.CAN.pt, acc_hud_status, set_speed,
-                                                       lead_distance, hud_control.leadDistanceBars))
+                                                       lead_distance, hud_control.leadDistanceBars, lead_object))
 
     # **** Stock ACC Button Controls **************************************** #
 
