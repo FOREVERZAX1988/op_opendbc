@@ -7,6 +7,10 @@ from opendbc.car.volkswagen.values import DBC, CanBus, NetworkLocation, Transmis
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
+# Follow distance levels for MLB (Macan) stalk button
+# 4 levels matching stock ACC, cycling on each button press
+MLB_FOLLOW_DISTANCE_LEVELS = 4
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -19,6 +23,18 @@ class CarState(CarStateBase):
     self.upscale_lead_car_signal = False
     self.eps_stock_values = False
     self.acc_type = 0
+    self.stock_lead_distance = 0
+    self.stock_lead_object = 0
+
+    # Follow distance controlled by stalk button (MLB only)
+    # Stored in Params so the planner can read it independently
+    if CP.flags & VolkswagenFlags.MLB and CP.openpilotLongitudinalControl:
+      from openpilot.common.params import Params
+      self._params = Params()
+      self.follow_distance = int(self._params.get("FollowDistance", return_default=True))
+    else:
+      self._params = None
+      self.follow_distance = 2  # default
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
@@ -280,7 +296,19 @@ class CarState(CarStateBase):
     self.ldw_stock_values = cam_cp.vl["LDW_02"] if self.CP.networkLocation == NetworkLocation.fwdCamera else {}
     self.gra_stock_values = pt_cp.vl["LS_01"]
 
+    # Pass through stock radar's lead vehicle display data for the instrument cluster
+    # These come from the stock radar ECU on the ext bus (bus 2) even when openpilot controls ACC
+    self.stock_lead_distance = int(ext_cp.vl["ACC_02"]["ACC_Abstandsindex"])
+    self.stock_lead_object = int(ext_cp.vl["ACC_02"]["ACC_Relevantes_Objekt"])
+
     ret.buttonEvents = self.create_button_events(pt_cp, self.CCP.BUTTONS)
+
+    # Cycle follow distance on stalk distance button release (MLB with openpilot long only)
+    if self._params is not None:
+      for b in ret.buttonEvents:
+        if b.type == ButtonType.gapAdjustCruise and not b.pressed:
+          self.follow_distance = (self.follow_distance + 1) % MLB_FOLLOW_DISTANCE_LEVELS
+          self._params.put_nonblocking('FollowDistance', str(self.follow_distance))
 
     ret.cruiseState.standstill = self.CP.pcmCruise and self.esp_hold_confirmation
     ret.standstill = ret.vEgoRaw == 0

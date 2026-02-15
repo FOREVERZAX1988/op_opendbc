@@ -1,0 +1,135 @@
+from opendbc.can import CANParser
+from opendbc.car import Bus, structs
+from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.interfaces import RadarInterfaceBase
+from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
+
+# MLB platform uses processed ACC radar data (single lead vehicle) from ACC_02 and ACC_04 messages.
+# These are sent by the stock radar ECU on the ext bus even when openpilot controls ACC.
+#
+# ACC_Abstandsindex: distance index to lead vehicle (0 = no car, higher = farther)
+#   NOT a raw distance -- it's a composite index that saturates above ~500 (~90m).
+#   Calibrated from 17k+ paired samples against vision lead distance (R²=0.73):
+#     dist_m = 0.201 * index - 11.4  (linear fit, valid for index ~90-500)
+#   Saturates above index ~500 at approximately 90m.
+# ACC_Relevantes_Objekt: 0 = no relevant object, 1 = lead vehicle detected
+# ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
+
+# Calibrated distance model: dist = DIST_A * index + DIST_B
+# Linear fit from 17,488 high-confidence paired samples (RMSE=14.8m, R²=0.73)
+DIST_A = 0.201    # meters per index unit
+DIST_B = -11.4    # offset in meters
+DIST_MAX = 95.0   # saturation cap -- index saturates above ~500
+
+# Message addresses for triggering
+ACC_04_ADDR = 0x324  # 804 decimal, trigger message (arrives after ACC_02)
+
+
+def get_radar_can_parser_mlb(CP):
+  bus = CanBus(CP)
+
+  # Radar signals on ext bus (camera side, bus 2 for gateway network)
+  ext_messages = [
+    ("ACC_02", 16),   # ~16 Hz, has ACC_Abstandsindex and ACC_Relevantes_Objekt
+    ("ACC_04", 16),   # ~16 Hz, has ACC_Geschw_Zielfahrzeug
+  ]
+
+  # Wheel speeds on pt bus (bus 0) for computing ego speed / vRel
+  pt_messages = [
+    ("ESP_03", 50),   # 50 Hz wheel speeds
+  ]
+
+  ext_parser = CANParser(DBC[CP.carFingerprint][Bus.pt], ext_messages, bus.ext)
+  pt_parser = CANParser(DBC[CP.carFingerprint][Bus.pt], pt_messages, bus.pt)
+  return ext_parser, pt_parser
+
+
+class RadarInterface(RadarInterfaceBase):
+  def __init__(self, CP):
+    super().__init__(CP)
+    self.updated_messages = set()
+    self.track_id = 0
+    self.v_ego = 0.0
+
+    self.is_mlb = bool(CP.flags & VolkswagenFlags.MLB)
+    self.radar_off_can = CP.radarUnavailable
+
+    if self.is_mlb and not self.radar_off_can:
+      self.ext_parser, self.pt_parser = get_radar_can_parser_mlb(CP)
+      self.trigger_msg = ACC_04_ADDR
+    else:
+      self.ext_parser = None
+      self.pt_parser = None
+      self.trigger_msg = None
+
+    # For base class compatibility
+    self.rcp = self.ext_parser
+
+  def update(self, can_strings):
+    if self.radar_off_can or self.ext_parser is None:
+      return super().update(None)
+
+    # Update both parsers with all CAN data
+    vls_ext = self.ext_parser.update(can_strings)
+    self.pt_parser.update(can_strings)
+    self.updated_messages.update(vls_ext)
+
+    # Update ego speed from wheel speeds
+    esp03 = self.pt_parser.vl["ESP_03"]
+    wheel_speeds = [
+      esp03["ESP_VL_Radgeschw"],
+      esp03["ESP_VR_Radgeschw"],
+      esp03["ESP_HL_Radgeschw"],
+      esp03["ESP_HR_Radgeschw"],
+    ]
+    self.v_ego = sum(wheel_speeds) / 4.0 * CV.KPH_TO_MS
+
+    if self.trigger_msg not in self.updated_messages:
+      return None
+
+    rr = self._update()
+    self.updated_messages.clear()
+    return rr
+
+  def _update(self):
+    ret = structs.RadarData()
+    if self.ext_parser is None:
+      return ret
+
+    if not self.ext_parser.can_valid:
+      ret.errors.canError = True
+      return ret
+
+    acc02 = self.ext_parser.vl["ACC_02"]
+    acc04 = self.ext_parser.vl["ACC_04"]
+
+    dist_index = acc02["ACC_Abstandsindex"]
+    obj_status = acc02["ACC_Relevantes_Objekt"]
+    lead_speed_kph = acc04["ACC_Geschw_Zielfahrzeug"]
+
+    has_lead = obj_status > 0 and dist_index > 0
+
+    if has_lead:
+      if 0 not in self.pts:
+        self.pts[0] = structs.RadarData.RadarPoint()
+        self.pts[0].trackId = self.track_id
+        self.track_id += 1
+
+      lead_speed = lead_speed_kph * CV.KPH_TO_MS
+      dRel = min(max(DIST_A * dist_index + DIST_B, 1.0), DIST_MAX)  # clamp to [1m, 95m]
+      vRel = lead_speed - self.v_ego
+
+      self.pts[0].measured = True
+      self.pts[0].dRel = dRel
+      self.pts[0].yRel = 0.0       # no lateral offset available
+      self.pts[0].vRel = vRel
+      self.pts[0].aRel = float('nan')  # not available from these messages
+      self.pts[0].yvRel = float('nan')
+
+    else:
+      # No lead vehicle detected
+      if 0 in self.pts:
+        del self.pts[0]
+
+    ret.points = list(self.pts.values())
+    return ret
