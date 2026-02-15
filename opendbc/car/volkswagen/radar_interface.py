@@ -7,19 +7,29 @@ from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
 # MLB platform uses processed ACC radar data (single lead vehicle) from ACC_02 and ACC_04 messages.
 # These are sent by the stock radar ECU on the ext bus even when openpilot controls ACC.
 #
-# ACC_Abstandsindex: distance index to lead vehicle (0 = no car, higher = farther)
-#   NOT a raw distance -- it's a composite index that saturates above ~500 (~90m).
-#   Calibrated from 17k+ paired samples against vision lead distance (R²=0.73):
-#     dist_m = 0.201 * index - 11.4  (linear fit, valid for index ~90-500)
-#   Saturates above index ~500 at approximately 90m.
+# ACC_Abstandsindex: NOT a pure distance -- it's a composite index that depends on
+#   ACC_Gesetzte_Zeitluecke (time gap setting). Each Zeitluecke level has a different
+#   index-to-distance mapping. Calibrated from 70,471 paired samples (1 route, 75 segments):
+#
+#   Zeitluecke=1: dist = 0.3654 * index - 9.52   (82% match, good at 0-30m)
+#   Zeitluecke=2: dist = 0.3184 * index - 13.84  (82% match, 95% at 30-50m)
+#   Zeitluecke=3: dist = 0.1989 * index + 1.05   (77% match, 91-93% at 30-80m)
+#   Zeitluecke=4: dist = 0.1815 * index + 23.49  (87% match, 97% at 80-120m)
+#
+#   Overall per-Zeitluecke model: 81.7% match, RMSE=12.4m (vs 70% without Zeitluecke)
+#
 # ACC_Relevantes_Objekt: 0 = no relevant object, 1 = lead vehicle detected
 # ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
 
-# Calibrated distance model: dist = DIST_A * index + DIST_B
-# Linear fit from 17,488 high-confidence paired samples (RMSE=14.8m, R²=0.73)
-DIST_A = 0.201    # meters per index unit
-DIST_B = -11.4    # offset in meters
-DIST_MAX = 95.0   # saturation cap -- index saturates above ~500
+# Per-Zeitluecke calibration: (slope, intercept) for dist = slope * index + intercept
+DIST_CALIBRATION = {
+  1: (0.3654, -9.52),    # closest following distance
+  2: (0.3184, -13.84),
+  3: (0.1989, 1.05),
+  4: (0.1815, 23.49),    # farthest following distance
+}
+DIST_CALIBRATION_DEFAULT = (0.2333, -0.41)  # fallback: single linear fit (no ZL info)
+DIST_MAX = 120.0  # cap max reported distance
 
 # Message addresses for triggering
 ACC_04_ADDR = 0x324  # 804 decimal, trigger message (arrives after ACC_02)
@@ -30,7 +40,7 @@ def get_radar_can_parser_mlb(CP):
 
   # Radar signals on ext bus (camera side, bus 2 for gateway network)
   ext_messages = [
-    ("ACC_02", 16),   # ~16 Hz, has ACC_Abstandsindex and ACC_Relevantes_Objekt
+    ("ACC_02", 16),   # ~16 Hz, has ACC_Abstandsindex, ACC_Relevantes_Objekt, ACC_Gesetzte_Zeitluecke
     ("ACC_04", 16),   # ~16 Hz, has ACC_Geschw_Zielfahrzeug
   ]
 
@@ -105,6 +115,7 @@ class RadarInterface(RadarInterfaceBase):
 
     dist_index = acc02["ACC_Abstandsindex"]
     obj_status = acc02["ACC_Relevantes_Objekt"]
+    zeitluecke = int(acc02["ACC_Gesetzte_Zeitluecke"])
     lead_speed_kph = acc04["ACC_Geschw_Zielfahrzeug"]
 
     has_lead = obj_status > 0 and dist_index > 0
@@ -115,8 +126,10 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[0].trackId = self.track_id
         self.track_id += 1
 
+      # Use per-Zeitluecke calibration for accurate distance
+      slope, intercept = DIST_CALIBRATION.get(zeitluecke, DIST_CALIBRATION_DEFAULT)
       lead_speed = lead_speed_kph * CV.KPH_TO_MS
-      dRel = min(max(DIST_A * dist_index + DIST_B, 1.0), DIST_MAX)  # clamp to [1m, 95m]
+      dRel = min(max(slope * dist_index + intercept, 1.0), DIST_MAX)
       vRel = lead_speed - self.v_ego
 
       self.pts[0].measured = True
