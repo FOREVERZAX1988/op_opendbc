@@ -8,8 +8,11 @@ from opendbc.car.volkswagen.values import DBC, CanBus, NetworkLocation, Transmis
 ButtonType = structs.CarState.ButtonEvent.Type
 
 # Follow distance levels for MLB (Macan) stalk button
-# 4 levels matching stock ACC, cycling on each button press
-MLB_FOLLOW_DISTANCE_LEVELS = 4
+# 3 levels (0-2) so ACC_Gesetzte_Zeitluecke stays in valid range (3-5).
+# Formula: ZL = leadDistanceBars + 2 = (follow_distance + 1) + 2 = follow_distance + 3
+# FollowDist 0 → ZL=3, 1 → ZL=4, 2 → ZL=5 (max valid)
+# ZL=6+ is "nicht_definiert" and causes car safety faults.
+MLB_FOLLOW_DISTANCE_LEVELS = 3
 
 
 class CarState(CarStateBase):

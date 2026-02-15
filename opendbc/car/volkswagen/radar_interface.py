@@ -22,11 +22,14 @@ from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
 # ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
 
 # Per-Zeitluecke calibration: (slope, intercept) for dist = slope * index + intercept
+# Calibrated from stock route (ZL 1-4). Openpilot sends ZL = leadDistanceBars + 2 (values 2-5).
+# ZL 5 is extrapolated from the trend in ZL 1-4 (decreasing slope, increasing intercept).
 DIST_CALIBRATION = {
-  1: (0.3654, -9.52),    # closest following distance
-  2: (0.3184, -13.84),
-  3: (0.1989, 1.05),
-  4: (0.1815, 23.49),    # farthest following distance
+  1: (0.3654, -9.52),    # stock closest
+  2: (0.3184, -13.84),   # openpilot FollowDistance=0
+  3: (0.1989, 1.05),     # openpilot FollowDistance=1
+  4: (0.1815, 23.49),    # openpilot FollowDistance=2 (default)
+  5: (0.1700, 35.0),     # openpilot FollowDistance=3 (extrapolated)
 }
 DIST_CALIBRATION_DEFAULT = (0.2333, -0.41)  # fallback: single linear fit (no ZL info)
 DIST_MAX = 120.0  # cap max reported distance
