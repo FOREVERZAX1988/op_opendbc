@@ -109,8 +109,9 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   gain = max(min(1.1 * v² - 6.5 * v + 63, 300), 63)
   #
   # Torque taper: as accel approaches the braking threshold (-0.2), torque is
-  # smoothly faded to 0 in the range [-0.1, -0.2]. This prevents a hard torque
-  # drop when entering braking mode (e.g., 90 Nm -> 0 Nm would feel like a stab).
+  # smoothly faded to 0 in the range [0.0, -0.2]. This prevents the abrupt torque
+  # loss that feels like a brake stab (e.g., 80 Nm -> 3 Nm over 0.06 m/s² range).
+  # Wider taper zone (0.2 range vs previous 0.1) makes the transition gradual.
   if acc_enabled and not braking:
     cabana_drag = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
     fitted_drag = 0.0884 * v_ego ** 2 + 0.96 * v_ego + 63.4
@@ -121,9 +122,10 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     accel_torque = accel * accel_gain * 1.3
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
     # Smooth taper: fade torque to 0 as accel approaches braking threshold (-0.2)
-    # At accel = -0.1: full torque. At accel = -0.2: torque = 0 (seamless transition)
-    if accel < -0.1:
-      fade = max(0.0, (accel + 0.2) / 0.1)  # 1.0 at -0.1, 0.0 at -0.2
+    # At accel = 0.0: full torque. At accel = -0.2: torque = 0 (seamless transition)
+    # Wider range (0.2 m/s²) prevents the abrupt torque loss that feels like a stab
+    if accel < 0.0:
+      fade = max(0.0, (accel + 0.2) / 0.2)  # 1.0 at 0.0, 0.0 at -0.2
       acc_moment = int(acc_moment * fade)
   else:
     acc_moment = 0
@@ -141,15 +143,16 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_Freigabe_Momentenanf": 1 if (acc_enabled and not braking) else 0,
     "ACC_Momentenanforderung": acc_moment,
     "ACC_zul_Regelabw": 0,
-    # Stock ACC_ax_Getriebe: 0 during cruise, positive during accel, negative only during braking
-    # Torque mode: clamp to >= 0 (stock never sends negative ax while engine torque is active)
-    #   1.7x multiplier: planner maxes at ~1.0 m/s² but stock sends 2.5 for same scenario.
-    #   Boosting ax tells the PDK to hold lower gears, so the same engine torque produces
-    #   more wheel force. Floor at 0.5 for any positive accel to prevent premature upshifting.
-    # Braking: allow negative, with speed-dependent lower limit (ramps in with speed)
-    #   At 10 km/h: -1.4, 20 km/h: -2.2, 24+ km/h: -2.5 (slightly beyond stock -2.016)
+    # Stock ACC_ax_Getriebe: positive during accel, negative during braking, ~0 at cruise
+    # Tells the PDK what acceleration to expect, influencing gear selection.
+    #   Accel (positive): 1.7x multiplier (planner maxes ~1.0, stock sends 2.5).
+    #     Floor at 0.5 for any positive accel to prevent premature upshifting.
+    #   Mild decel (torque taper zone): allow gentle negative values (capped at -0.3)
+    #     to signal the PDK to downshift, preparing for re-acceleration.
+    #     Torque is already fading in this zone, so no conflict with engine torque.
+    #   Braking: allow negative, with speed-dependent lower limit
     "ACC_ax_Getriebe": (max(min(accel * 1.7, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
-                             (0.5 if accel > 0.1 else 0)) if not braking else
+                             (0.5 if accel > 0.1 else max(accel, -0.3))) if not braking else
                          max(accel, max(-2.5, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
