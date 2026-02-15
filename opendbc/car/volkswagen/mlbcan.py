@@ -88,6 +88,10 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
       braking = accel < -0.05   # stay in braking until planner clearly wants cruise/accel
     else:
       braking = accel < -0.2    # enter braking for curves/stops
+    # Keep braking committed during stops -- planner accel can fluctuate near 0
+    # and briefly cross -0.05, which would release brakes mid-stop without this
+    if stopping:
+      braking = True
   else:
     braking = False
   _braking_prev = braking
@@ -104,8 +108,8 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Quadratic fit from stock data, floored at 63 to prevent dip at ~10 km/h
   #   gain = max(min(1.1 * v² - 6.5 * v + 63, 300), 63)
   #
-  # Torque taper: as accel approaches the braking threshold (-0.3), torque is
-  # smoothly faded to 0 in the range [-0.15, -0.3]. This prevents a hard torque
+  # Torque taper: as accel approaches the braking threshold (-0.2), torque is
+  # smoothly faded to 0 in the range [-0.1, -0.2]. This prevents a hard torque
   # drop when entering braking mode (e.g., 90 Nm -> 0 Nm would feel like a stab).
   if acc_enabled and not braking:
     cabana_drag = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
