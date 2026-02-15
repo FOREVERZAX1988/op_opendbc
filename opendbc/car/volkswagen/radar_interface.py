@@ -7,19 +7,21 @@ from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
 # MLB platform uses processed ACC radar data (single lead vehicle) from ACC_02 and ACC_04 messages.
 # These are sent by the stock radar ECU on the ext bus even when openpilot controls ACC.
 #
-# ACC_Abstandsindex: distance index to lead vehicle (0 = no car, higher = farther)
-#   NOT a raw distance -- it's a composite index that saturates above ~500 (~90m).
-#   Calibrated from 17k+ paired samples against vision lead distance (R²=0.73):
-#     dist_m = 0.201 * index - 11.4  (linear fit, valid for index ~90-500)
-#   Saturates above index ~500 at approximately 90m.
+# ACC_Abstandsindex: NOT a pure distance -- it's a composite radar index.
+#   The index is non-monotonic w.r.t. actual distance (dips at index 175-250),
+#   likely influenced by relative speed, radar cross-section, or TTC.
+#   Best-effort linear calibration from 13,748 paired samples across 2 routes:
+#     dist_m = 0.0984 * index + 38.37  (RMSE=18.5m, 71% overall match rate)
+#   Performs well at 50-120m range (83-85% match) where radar adds most value.
+#   Close-range (<30m) is unreliable -- vision is primary there anyway.
 # ACC_Relevantes_Objekt: 0 = no relevant object, 1 = lead vehicle detected
 # ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
 
 # Calibrated distance model: dist = DIST_A * index + DIST_B
-# Linear fit from 17,488 high-confidence paired samples (RMSE=14.8m, R²=0.73)
-DIST_A = 0.201    # meters per index unit
-DIST_B = -11.4    # offset in meters
-DIST_MAX = 95.0   # saturation cap -- index saturates above ~500
+# Combined linear fit from 13,748 paired radar-index vs vision-distance samples (2 routes)
+DIST_A = 0.0984   # meters per index unit
+DIST_B = 38.37    # offset in meters
+DIST_MAX = 120.0  # cap max reported distance
 
 # Message addresses for triggering
 ACC_04_ADDR = 0x324  # 804 decimal, trigger message (arrives after ACC_02)
@@ -116,7 +118,7 @@ class RadarInterface(RadarInterfaceBase):
         self.track_id += 1
 
       lead_speed = lead_speed_kph * CV.KPH_TO_MS
-      dRel = min(max(DIST_A * dist_index + DIST_B, 1.0), DIST_MAX)  # clamp to [1m, 95m]
+      dRel = min(max(DIST_A * dist_index + DIST_B, 1.0), DIST_MAX)  # clamp to [1m, 120m]
       vRel = lead_speed - self.v_ego
 
       self.pts[0].measured = True
