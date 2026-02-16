@@ -12,7 +12,7 @@ ButtonType = structs.CarState.ButtonEvent.Type
 # Stock radar's ACC_Gesetzte_Zeitluecke (ZL) is mirrored from ext bus to our ACC_02 on bus 0.
 # The stock radar handles DIST button cycling natively (ZL 1-4).
 # We derive follow_distance from stock ZL: ZL 1→FD 0, ZL 2→FD 1, ZL 3→FD 2, ZL 4→FD 3.
-MLB_DEFAULT_ZEITLUECKE = 4
+MLB_DEFAULT_ZEITLUECKE = 3  # Stock Macan ACC starts at 3 bars (ZL 3)
 
 
 class CarState(CarStateBase):
