@@ -85,7 +85,12 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   # In between (-0.18 to -0.05), mild decel is handled by reducing engine torque.
   if acc_enabled:
     if _braking_prev:
-      braking = accel < -0.05   # stay in braking until planner clearly wants cruise/accel
+      # At low speed, require positive accel to release brakes. Near standstill the
+      # planner naturally eases off (e.g. -0.04) which isn't "wants to go" -- it's
+      # just reducing brake pressure as the car slows. Without this, 45 Nm of drag
+      # torque at standstill creeps the car through red lights.
+      exit_threshold = -0.05 if v_ego > 2.0 else 0.0
+      braking = accel < exit_threshold
     else:
       braking = accel < -0.18   # enter braking for curves/stops
     # Keep braking committed during stops -- planner accel can fluctuate near 0
@@ -113,7 +118,7 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   # At -0.14: fade=0.5, ~65 Nm at highway (smooth engine braking).
   # At -0.18: fade=0, seamless handoff to braking mode.
   if acc_enabled and not braking:
-    drag_torque = 0.0564 * v_ego ** 2 + 2.671 * v_ego + 37.54
+    drag_torque = 0.0564 * v_ego ** 2 + 2.671 * v_ego + 45.54
     accel_gain = max(min(1.1 * v_ego ** 2 - 6.5 * v_ego + 63, 300), 63)
     # 1.3x torque boost on the accel component only (drag stays calibrated for cruise).
     # Planner maxes at ~1.0 m/s² while stock requests 2.5 -- this partially compensates.
