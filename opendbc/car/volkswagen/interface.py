@@ -20,7 +20,8 @@ class CarInterface(CarInterfaceBase):
 
     if ret.flags & VolkswagenFlags.MLB:
       # MLB platform has processed radar data available on the ext bus (ACC_02/ACC_04)
-      ret.radarUnavailable = False
+      # TEMPORARY: disabled to test if radar ext_parser causes "Unknown Vehicle Variant" canError
+      ret.radarUnavailable = True
 
     if ret.flags & VolkswagenFlags.PQ:
       # Set global PQ35/PQ46/NMS parameters
