@@ -158,23 +158,25 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   acc_05_values = {
     "ACC_Status_ACC": acc_control,
     # Stock ACC_Verz_anf range during braking: -2.015 to 0
-    # Allow slightly beyond stock (-2.5 vs -2.0) for more decisive braking (curves, stops)
-    "ACC_Verz_anf": max(accel, -2.5) if braking else (0 if acc_enabled else 3.01),
+    # Panda safety allows -3.5; DBC allows -7.22. Use panda limit for max braking.
+    "ACC_Verz_anf": max(accel, -3.5) if braking else (0 if acc_enabled else 3.01),
     "ACC_Freigabe_Verzanf": 1 if braking else 0,
     "ACC_Freigabe_Momentenanf": 1 if (acc_enabled and not braking) else 0,
     "ACC_Momentenanforderung": acc_moment,
     "ACC_zul_Regelabw": 0,
     # Stock ACC_ax_Getriebe: positive during accel, negative during braking, ~0 at cruise
     # Tells the PDK what acceleration to expect, influencing gear selection.
+    # DBC: 9-bit unsigned, range [-2.016, +10.248]. Values below -2.016 WRAP to ~+10
+    # (unsigned overflow), sending a massive accel request to the PDK during braking!
     #   Accel (positive): 1.7x multiplier (planner maxes ~1.0, stock sends 2.5).
     #     Floor at 0.5 for any positive accel to prompt downshift for re-acceleration.
     #   Mild decel (torque taper zone): allow gentle negative values (capped at -0.3)
     #     to signal the PDK to downshift, preparing for re-acceleration.
     #     Torque is already fading in this zone, so no conflict with engine torque.
-    #   Braking: allow negative, with speed-dependent lower limit
+    #   Braking: clamped to DBC min -2.016 (stock max observed: -2.015)
     "ACC_ax_Getriebe": (max(min(accel * 1.7, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
                              (0.5 if accel > 0.0 else max(accel, -0.3))) if not braking else
-                         max(accel, max(-2.5, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
+                         max(accel, max(-2.016, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Anhalten": stopping,
