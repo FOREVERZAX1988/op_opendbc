@@ -315,7 +315,7 @@ class CarState(CarStateBase):
       new_fd = max(0, min(3, self.stock_zeitluecke - 1))
       if new_fd != self.follow_distance:
         self.follow_distance = new_fd
-        self._params.put_nonblocking('FollowDistance', str(self.follow_distance))
+        self._params.put_nonblocking('FollowDistance', self.follow_distance)
 
     ret.buttonEvents = self.create_button_events(pt_cp, self.CCP.BUTTONS)
 
