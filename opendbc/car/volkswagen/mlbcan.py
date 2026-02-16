@@ -55,11 +55,10 @@ def acc_hud_status_value(main_switch_on, acc_faulted, long_active):
 
 # Braking mode state for hysteresis (prevents rapid mode switching that causes brake stabs)
 _braking_prev = False
-_accel_buf = []  # ring buffer for accel trend detection (~0.5s at 50Hz)
 
 
 def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_control, stopping, starting, esp_hold, v_ego=0):
-  global _braking_prev, _accel_buf
+  global _braking_prev
   commands = []
 
   # ACC_05: accel/decel request to gearbox, ESP, EPB, and motor
@@ -77,35 +76,18 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Acceleration: engine torque via ACC_Momentenanforderung, ACC_Verz_anf = 0
   #   Braking: decel via ACC_Verz_anf (negative), ACC_Momentenanforderung = 0
 
-  # Accel trend detection: track accel over ~0.5s to distinguish real decel ramps
-  # from e2e model oscillation. At 50Hz (ACC_CONTROL_STEP=2), 25 samples = 0.5s.
-  #   Real obstacle ramp: accel drops -0.09 -> -0.20 in 0.5s, trend = -0.11
-  #   e2e oscillation:    accel drifts -0.18 -> -0.21 in 0.5s, trend = -0.03
-  if acc_enabled:
-    _accel_buf.append(accel)
-    if len(_accel_buf) > 25:
-      _accel_buf.pop(0)
-  else:
-    _accel_buf.clear()
-  accel_trend = (accel - _accel_buf[0]) if len(_accel_buf) >= 25 else 0.0
-
   # Braking mode with hysteresis to prevent rapid mode switching.
   # The torque-to-brake transition (150 Nm -> 0 Nm + brakes) is inherently abrupt.
   # Hysteresis ensures we only enter braking for meaningful decel requests (curves, stops)
   # and stay committed until the planner clearly wants to cruise/accelerate again.
-  #   Entry threshold scales with accel trend (how fast planner is ramping down):
-  #     No trend (>= -0.05):    -0.235  (deep, avoids e2e oscillation stabs)
-  #     Moderate trend (-0.05): -0.2    (real decel detected, respond earlier)
-  #     Strong trend (<= -0.10):-0.1    (clear obstacle ramp, brake ASAP)
-  #     Linear interpolation between moderate and strong trend.
-  #   Exit braking: accel > -0.05 (planner clearly wants cruise/accel)
-  #   Once in braking, hysteresis keeps us there -- no oscillation risk from early entry.
-  braking_entry = max(-0.235, min(-0.1, -0.2 - 2.0 * (accel_trend + 0.05)))
+  #   Enter braking: accel < -0.235 (deep enough to avoid e2e model oscillation around -0.2)
+  #   Exit braking:  accel > -0.05  (planner clearly wants cruise/accel)
+  # In between (-0.235 to -0.05), mild decel is handled by reducing engine torque.
   if acc_enabled:
     if _braking_prev:
       braking = accel < -0.05   # stay in braking until planner clearly wants cruise/accel
     else:
-      braking = accel < braking_entry
+      braking = accel < -0.235  # enter braking for curves/stops
     # Keep braking committed during stops -- planner accel can fluctuate near 0
     # and briefly cross -0.05, which would release brakes mid-stop without this
     if stopping:
