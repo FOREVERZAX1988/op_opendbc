@@ -55,10 +55,11 @@ def acc_hud_status_value(main_switch_on, acc_faulted, long_active):
 
 # Braking mode state for hysteresis (prevents rapid mode switching that causes brake stabs)
 _braking_prev = False
+_accel_buf = []  # ring buffer for accel trend detection (~0.5s at 50Hz)
 
 
 def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_control, stopping, starting, esp_hold, v_ego=0):
-  global _braking_prev
+  global _braking_prev, _accel_buf
   commands = []
 
   # ACC_05: accel/decel request to gearbox, ESP, EPB, and motor
@@ -76,18 +77,35 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Acceleration: engine torque via ACC_Momentenanforderung, ACC_Verz_anf = 0
   #   Braking: decel via ACC_Verz_anf (negative), ACC_Momentenanforderung = 0
 
+  # Accel trend detection: track accel over ~0.5s to distinguish real decel ramps
+  # from e2e model oscillation. At 50Hz (ACC_CONTROL_STEP=2), 25 samples = 0.5s.
+  #   Real obstacle ramp: accel drops -0.09 -> -0.20 in 0.5s, trend = -0.11
+  #   e2e oscillation:    accel drifts -0.18 -> -0.21 in 0.5s, trend = -0.03
+  if acc_enabled:
+    _accel_buf.append(accel)
+    if len(_accel_buf) > 25:
+      _accel_buf.pop(0)
+  else:
+    _accel_buf.clear()
+  accel_trend = (accel - _accel_buf[0]) if len(_accel_buf) >= 25 else 0.0
+
   # Braking mode with hysteresis to prevent rapid mode switching.
   # The torque-to-brake transition (150 Nm -> 0 Nm + brakes) is inherently abrupt.
   # Hysteresis ensures we only enter braking for meaningful decel requests (curves, stops)
   # and stay committed until the planner clearly wants to cruise/accelerate again.
-  #   Enter braking: accel < -0.2  (curves, stops -- not too deep or curves won't brake)
-  #   Exit braking:  accel > -0.05 (planner clearly wants cruise/accel)
-  # In between (-0.2 to -0.05), mild decel is handled by reducing engine torque.
+  #   Entry threshold scales with accel trend (how fast planner is ramping down):
+  #     No trend (>= -0.05):    -0.235  (deep, avoids e2e oscillation stabs)
+  #     Moderate trend (-0.05): -0.2    (real decel detected, respond earlier)
+  #     Strong trend (<= -0.10):-0.1    (clear obstacle ramp, brake ASAP)
+  #     Linear interpolation between moderate and strong trend.
+  #   Exit braking: accel > -0.05 (planner clearly wants cruise/accel)
+  #   Once in braking, hysteresis keeps us there -- no oscillation risk from early entry.
+  braking_entry = max(-0.235, min(-0.1, -0.2 - 2.0 * (accel_trend + 0.05)))
   if acc_enabled:
     if _braking_prev:
       braking = accel < -0.05   # stay in braking until planner clearly wants cruise/accel
     else:
-      braking = accel < -0.2    # enter braking for curves/stops
+      braking = accel < braking_entry
     # Keep braking committed during stops -- planner accel can fluctuate near 0
     # and briefly cross -0.05, which would release brakes mid-stop without this
     if stopping:
@@ -108,10 +126,10 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   #   Quadratic fit from stock data, floored at 63 to prevent dip at ~10 km/h
   #   gain = max(min(1.1 * v² - 6.5 * v + 63, 300), 63)
   #
-  # Torque taper: as accel approaches the braking threshold (-0.2), torque is
-  # smoothly faded to 0 in the range [0.0, -0.2]. This prevents the abrupt torque
-  # loss that feels like a brake stab (e.g., 80 Nm -> 3 Nm over 0.06 m/s² range).
-  # Wider taper zone (0.2 range vs previous 0.1) makes the transition gradual.
+  # Torque taper: as accel approaches the braking threshold (-0.235), torque is
+  # smoothly faded to 0. Taper starts at -0.1 (below that, accel_torque handles it).
+  # At -0.2: fade=0.26, ~50Nm drag torque (gentle engine braking, no brake stab).
+  # At -0.235: fade=0, seamless handoff to braking mode.
   if acc_enabled and not braking:
     cabana_drag = min(0.35 * v_ego ** 2 + 30, 0.069 * v_ego ** 2 + 141)
     fitted_drag = 0.0884 * v_ego ** 2 + 0.96 * v_ego + 63.4
@@ -121,14 +139,14 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     # Planner maxes at ~1.0 m/s² while stock requests 2.5 -- this partially compensates.
     accel_torque = accel * accel_gain * 1.3
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
-    # Smooth taper: fade torque to 0 as accel approaches braking threshold (-0.2)
+    # Smooth taper: fade torque to 0 as accel approaches braking threshold (-0.235).
     # Only taper for meaningful decel requests (below -0.1), not mild ones.
     # For mild decel (0 to -0.1), the accel_torque component naturally reduces
     # torque by a few Nm, which is appropriate. Tapering in this range was killing
     # drag torque compensation -- e.g. at accel=-0.077, fade=0.615 cut 168 Nm to
     # 100 Nm, making the car bleed speed even though it only needed a 6 Nm reduction.
     if accel < -0.1:
-      fade = max(0.0, (accel + 0.2) / 0.1)  # 1.0 at -0.1, 0.0 at -0.2
+      fade = max(0.0, (accel + 0.235) / 0.135)  # 1.0 at -0.1, 0.0 at -0.235
       acc_moment = int(acc_moment * fade)
   else:
     acc_moment = 0
@@ -149,13 +167,13 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     # Stock ACC_ax_Getriebe: positive during accel, negative during braking, ~0 at cruise
     # Tells the PDK what acceleration to expect, influencing gear selection.
     #   Accel (positive): 1.7x multiplier (planner maxes ~1.0, stock sends 2.5).
-    #     Floor at 0.5 for any positive accel to prevent premature upshifting.
+    #     Floor at 0.5 for any positive accel to prompt downshift for re-acceleration.
     #   Mild decel (torque taper zone): allow gentle negative values (capped at -0.3)
     #     to signal the PDK to downshift, preparing for re-acceleration.
     #     Torque is already fading in this zone, so no conflict with engine torque.
     #   Braking: allow negative, with speed-dependent lower limit
     "ACC_ax_Getriebe": (max(min(accel * 1.7, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
-                             (0.5 if accel > 0.1 else max(accel, -0.3))) if not braking else
+                             (0.5 if accel > 0.0 else max(accel, -0.3))) if not braking else
                          max(accel, max(-2.5, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
