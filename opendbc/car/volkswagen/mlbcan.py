@@ -122,10 +122,13 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     accel_torque = accel * accel_gain * 1.3
     acc_moment = int(max(0, min(500, drag_torque + accel_torque)))
     # Smooth taper: fade torque to 0 as accel approaches braking threshold (-0.2)
-    # At accel = 0.0: full torque. At accel = -0.2: torque = 0 (seamless transition)
-    # Wider range (0.2 m/s²) prevents the abrupt torque loss that feels like a stab
-    if accel < 0.0:
-      fade = max(0.0, (accel + 0.2) / 0.2)  # 1.0 at 0.0, 0.0 at -0.2
+    # Only taper for meaningful decel requests (below -0.1), not mild ones.
+    # For mild decel (0 to -0.1), the accel_torque component naturally reduces
+    # torque by a few Nm, which is appropriate. Tapering in this range was killing
+    # drag torque compensation -- e.g. at accel=-0.077, fade=0.615 cut 168 Nm to
+    # 100 Nm, making the car bleed speed even though it only needed a 6 Nm reduction.
+    if accel < -0.1:
+      fade = max(0.0, (accel + 0.2) / 0.1)  # 1.0 at -0.1, 0.0 at -0.2
       acc_moment = int(acc_moment * fade)
   else:
     acc_moment = 0
@@ -164,11 +167,11 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
   return commands
 
 
-def create_acc_hud_control(packer, bus, acc_hud_status, set_speed, lead_distance, distance, lead_object=0):
+def create_acc_hud_control(packer, bus, acc_hud_status, set_speed, lead_distance, distance, lead_object=0, zeitluecke=4):
   values = {
     "ACC_Status_Anzeige": acc_hud_status,
     "ACC_Wunschgeschw_02": set_speed if set_speed < 250 else 327.36,
-    "ACC_Gesetzte_Zeitluecke": min(distance, 4),  # Stock Macan uses ZL 1-4; clamp to valid range
+    "ACC_Gesetzte_Zeitluecke": zeitluecke,  # Mirror stock radar's ZL from ext bus (responds to DIST button)
     "ACC_Display_Prio": 3,
     "ACC_Abstandsindex": lead_distance,
     "ACC_Relevantes_Objekt": lead_object,

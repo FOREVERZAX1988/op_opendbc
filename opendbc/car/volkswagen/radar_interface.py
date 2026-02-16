@@ -21,15 +21,17 @@ from opendbc.car.volkswagen.values import DBC, CanBus, VolkswagenFlags
 # ACC_Relevantes_Objekt: 0 = no relevant object, 1 = lead vehicle detected
 # ACC_Geschw_Zielfahrzeug: lead vehicle absolute speed in km/h (accurate, radar Doppler)
 
-# Per-Zeitluecke calibration: (slope, intercept) for dist = slope * index + intercept
-DIST_CALIBRATION = {
-  1: (0.3654, -9.52),    # closest following distance
-  2: (0.3184, -13.84),
-  3: (0.1989, 1.05),
-  4: (0.1815, 23.49),    # farthest following distance
+# Per-Zeitluecke distance calibration: {ZL: (slope, intercept)}
+# Calibrated from 70,471 paired samples (1 route, 75 segments):
+#   Overall match rate: 81.7%, RMSE=12.4m (vs 70% without Zeitluecke)
+DIST_CAL = {
+    1: (0.3654, -9.52),    # 82% match, RMSE=5.8m, good at 0-30m
+    2: (0.3184, -13.84),   # 82% match, RMSE=8.4m, 95% at 30-50m
+    3: (0.1989, 1.05),     # 77% match, RMSE=16.5m, 91-93% at 30-80m
+    4: (0.1815, 23.49),    # 87% match, RMSE=15.7m, 97% at 80-120m
 }
-DIST_CALIBRATION_DEFAULT = (0.2333, -0.41)  # fallback: single linear fit (no ZL info)
-DIST_MAX = 120.0  # cap max reported distance
+DIST_CAL_DEFAULT = (0.1815, 23.49)  # fallback to ZL=4 calibration
+DIST_MAX = 120.0   # cap max reported distance
 
 # Message addresses for triggering
 ACC_04_ADDR = 0x324  # 804 decimal, trigger message (arrives after ACC_02)
@@ -126,9 +128,8 @@ class RadarInterface(RadarInterfaceBase):
         self.pts[0].trackId = self.track_id
         self.track_id += 1
 
-      # Use per-Zeitluecke calibration for accurate distance
-      slope, intercept = DIST_CALIBRATION.get(zeitluecke, DIST_CALIBRATION_DEFAULT)
       lead_speed = lead_speed_kph * CV.KPH_TO_MS
+      slope, intercept = DIST_CAL.get(zeitluecke, DIST_CAL_DEFAULT)
       dRel = min(max(slope * dist_index + intercept, 1.0), DIST_MAX)
       vRel = lead_speed - self.v_ego
 

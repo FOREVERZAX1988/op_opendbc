@@ -151,7 +151,8 @@ class CarController(CarControllerBase):
       # FIXME: Detect clusters with vEgoCluster offsets and apply an identical vCruiseCluster offset
       set_speed = hud_control.setSpeed * CV.MS_TO_KPH
       can_sends.append(self.CCS.create_acc_hud_control(self.packer_pt, self.CAN.pt, acc_hud_status, set_speed,
-                                                       lead_distance, hud_control.leadDistanceBars, lead_object))
+                                                       lead_distance, hud_control.leadDistanceBars, lead_object,
+                                                       zeitluecke=CS.stock_zeitluecke))
 
     # **** Stock ACC Button Controls **************************************** #
 
