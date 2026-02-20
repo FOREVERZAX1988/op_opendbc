@@ -151,17 +151,14 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     # Tells the PDK what acceleration to expect, influencing gear selection.
     # DBC: 9-bit unsigned, range [-2.016, +10.248]. Values below -2.016 WRAP to ~+10
     # (unsigned overflow), sending a massive accel request to the PDK during braking!
-    #   Accel (positive): 2.5x multiplier to match stock ACC range (1.5-2.5 m/s²).
-    #     Floor at 1.5 for any positive accel to force PDK downshifts.
-    #     At 35 mph in 6th gear the PDK needs a strong signal (1.5-2.5) to drop
-    #     2-3 gears. Previous 1.7x/0.5 floor left the car in tall gears with no
-    #     wheel torque; 1.0 floor still wasn't enough for multi-gear downshifts.
+    #   Accel (positive): 1.7x multiplier (planner maxes ~1.0, stock sends 2.5).
+    #     Floor at 0.5 for any positive accel to prompt downshift for re-acceleration.
     #   Mild decel (torque taper zone): allow gentle negative values (capped at -0.3)
     #     to signal the PDK to downshift, preparing for re-acceleration.
     #     Torque is already fading in this zone, so no conflict with engine torque.
     #   Braking: clamped to DBC min -2.016 (stock max observed: -2.015)
-    "ACC_ax_Getriebe": (max(min(accel * 2.5, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
-                             (1.5 if accel > 0.0 else max(accel, -0.3))) if not braking else
+    "ACC_ax_Getriebe": (max(min(accel * 1.7, min(1.8 + 0.015 * v_ego * 3.6, 2.5)),
+                             (0.5 if accel > 0.0 else max(accel, -0.3))) if not braking else
                          max(accel, max(-2.016, -0.6 - 0.08 * v_ego * 3.6))) if acc_enabled else 0,
     "ACC_Vorbefuellung_Bremsanlage": 1 if braking else 0,
     "ACC_StartStopp_Info": acc_enabled,
